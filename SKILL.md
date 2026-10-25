@@ -168,6 +168,30 @@ over-captured | suspicious-unassigned）/ `evidence`（一句话，引用图中�
   本路径只产出问题清单
 - 批量审计多篇时每篇一个 failures.jsonl，放在各自输出目录
 
+## agent 辅助修复：agent-split（A2，面板拆解）
+
+**适用**：`composition.kind == "single"` 但 `composition.captionPanels >= 2`
+的资产——面板烘焙在单张位图/矢量块里，纯几何不可分，agent 视觉是
+唯一出路。工作流：
+
+1. 读 manifest 找到这类资产（captionPanels 是题注声明的面板数 N）
+2. Read 该资产裁剪图，肉眼划分 N 个面板，记录每个面板的归一化 bbox
+   （0-1000，阅读顺序）
+3. 执行拆解：
+
+```bash
+node <CLI> agent-split <输出目录> <figId> \n  --bboxes "x0,y0,x1,y1 x0,y0,x1,y1 ..." --pdf <原PDF路径>
+```
+
+4. 命令内置四条防呆（captionPanels 数量一致 / bbox 合法 / 面板重叠
+   IoU≤0.5 / 离心 ≤200），违规即拒；`--force` 可跳过数量与离心检查
+5. 产物：`{figId}_agent-panel-N_p{P}.jpg` 面板文件 + manifest 的
+   `panels[]`/`composition` 重算 + `agentAssisted: true` 标记；
+   之后重新生成 gallery 即可按面板展示
+
+**注意**：agent 返回的 bbox 要贴合面板边缘（含面板子标签如 "(a)"）；
+拆解结果以 Read 复核为准，有疑问宁可不拆。
+
 ## manifest 字段速查
 
 | 字段 | 含义 |
