@@ -20,15 +20,14 @@ description: >
 
 > 驱动 [pdf-figs 工具链](../../)（工具包名 pdf-figs，npm 包名不变）
 
-从学术论文 PDF 中保真重组复杂图组与表格。四个典型触发场景，**先判断用户
+从学术论文 PDF 中保真重组复杂图组与表格。三个典型触发场景，**先判断用户
 属于哪类，再走对应路径**：
 
 | 用户意图 | 路径 | 关键产出 |
 |---------|------|---------|
-| "把图表抽出来给我看" / "extract and show figures" | A：抽取 → 校验 → gallery | gallery.html + 图片目录 |
-| "转成数据集/喂 LLM" / "convert to dataset" | B：抽取 → 校验 → 字段解读 | manifest dict（caption/composition/cells） |
-| "分析这篇论文的 Figure N" / "describe Figure N" | C：抽取 → 定位该图 → 读 panels + composition | 逐面板图片路径 + 结构描述 |
-| "检查提取质量" / "audit the extraction" | D：抽取 → 逐张读图审计 | failures.jsonl 问题清单 |
+| "把图表抽出来给我看" / "extract and show figures" | 抽取 → 校验 → gallery | gallery.html + 图片目录 |
+| "转成数据集/喂 LLM" / "convert to dataset" | 抽取 → 校验 → 字段解读 | manifest dict（caption/composition/cells） |
+| "分析这篇论文的 Figure N" / "describe Figure N" | 抽取 → 定位该图 → 读 panels + composition | 逐面板图片路径 + 结构描述 |
 
 ## 步骤 0：定位工具（Tool Resolution）
 
@@ -128,69 +127,6 @@ result = pdffigures.extract("paper.pdf")
    输出目录解析**（如 `fig-2_panel-1_p4.jpg`）——用 Read 工具逐张查看
    并向用户描述内容；单图时直接看 `image.path`
 4. `caption` 是论文作者对图的原版描述——引用它作为分析的权威起点
-
-## 路径 D：质量审计（"检查提取质量" / 批量审计）
-
-agent 的视觉判断是引擎几何信号之外的**第二双眼睛**。审计后产出的
-`failures.jsonl` 是修复工作的数据入口——每条可直接转化为回归 fixture。
-
-### 流程
-
-1. 抽取（路径 A 第 1 步）+ 校验（第 2 步）
-2. 读 manifest，对**每个** figure/table 条目用 Read 查看裁剪图，按
-   **五查清单**判定：
-   - **表头切**：图/表顶部文字被水平切断（表头行/首行不完整）
-   - **底行缺**：底部内容戛然而止（数据行/图例/x 轴标签缺失）
-   - **宽截列**：左右边缘有被切的字符（表格侧列/图旁标签被裁）
-   - **题注断**：caption 文本明显不完整（无句号收尾的长题注、
-     与图中可见题注文字不一致）
-   - **过收**：卷入邻栏正文、相邻资产（另一图/表的局部出现在本
-     裁剪内）——双栏排版常见（astro-ph fig-4 吞邻栏 Table 1 实测）
-3. 复核 `unassigned[]`：其中含大块图形（宽 >300 或高 >200）时,
-   可能是被题注关联遗漏的真图表——逐块查看
-4. 每个问题写一条 JSONL 记录到 `<输出目录>/failures.jsonl`：
-
-```json
-{"paper": "paper-id", "asset": "table-1", "page": 7, "check": "header-cut",
- "evidence": "top row characters clipped", "image": "table-1_p7.png",
- "captionExcerpt": "Table 1. Mean ranks of models..."}
-```
-
-字段：`paper`（pdf 文件名）/ `asset`（manifest 里的 id）/ `check`
-（header-cut | bottom-truncated | width-clipped | caption-broken |
-over-captured | suspicious-unassigned）/ `evidence`（一句话，引用图中可见证据）/
-`image`（证据截图的相对路径）/ `captionExcerpt`（可选）。
-
-### 边界
-
-- 只记录**有图中证据**的问题，不确定的不记（宁缺勿滥）
-- 审计结论不回写 manifest、不改变抽取产物——质量判定以 GT 评测为准，
-  本路径只产出问题清单
-- 批量审计多篇时每篇一个 failures.jsonl，放在各自输出目录
-
-## agent 辅助修复：agent-split（A2，面板拆解）
-
-**适用**：`composition.kind == "single"` 但 `composition.captionPanels >= 2`
-的资产——面板烘焙在单张位图/矢量块里，纯几何不可分，agent 视觉是
-唯一出路。工作流：
-
-1. 读 manifest 找到这类资产（captionPanels 是题注声明的面板数 N）
-2. Read 该资产裁剪图，肉眼划分 N 个面板，记录每个面板的归一化 bbox
-   （0-1000，阅读顺序）
-3. 执行拆解：
-
-```bash
-node <CLI> agent-split <输出目录> <figId> \n  --bboxes "x0,y0,x1,y1 x0,y0,x1,y1 ..." --pdf <原PDF路径>
-```
-
-4. 命令内置四条防呆（captionPanels 数量一致 / bbox 合法 / 面板重叠
-   IoU≤0.5 / 离心 ≤200），违规即拒；`--force` 可跳过数量与离心检查
-5. 产物：`{figId}_agent-panel-N_p{P}.jpg` 面板文件 + manifest 的
-   `panels[]`/`composition` 重算 + `agentAssisted: true` 标记；
-   之后重新生成 gallery 即可按面板展示
-
-**注意**：agent 返回的 bbox 要贴合面板边缘（含面板子标签如 "(a)"）；
-拆解结果以 Read 复核为准，有疑问宁可不拆。
 
 ## manifest 字段速查
 
